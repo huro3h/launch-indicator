@@ -13,6 +13,8 @@ DAEMON="$ROOT/build/launch-indicator"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 LOG="$HOME/Library/Logs/launch-indicator.log"
 DOMAIN="gui/$(id -u)"
+# 署名に使う証明書。キーチェーンになければ、リンカが付けるアドホック署名のままにする
+IDENTITY="${CODESIGN_IDENTITY:-Local Code Signing}"
 
 apply=false
 uninstall=false
@@ -36,7 +38,15 @@ if $uninstall; then
   exit 0
 fi
 
+# grep -q は一致した時点で抜け、pipefail で security 側の SIGPIPE が失敗扱いになりうるので使わない
+has_identity() { security find-identity -p codesigning | grep -F "\"$IDENTITY\"" >/dev/null; }
+
 echo "ビルド: $ROOT/launch-indicator.swift → $DAEMON"
+if has_identity; then
+  echo "署名:   証明書「${IDENTITY}」(識別子 $LABEL)"
+else
+  echo "署名:   証明書「${IDENTITY}」がないため、アドホック署名のまま"
+fi
 echo "生成:   $PLIST"
 echo "登録:   $DOMAIN/$LABEL(ログ: $LOG)"
 $apply || { echo "(ドライラン。実行するには --apply を付ける)"; exit 0; }
@@ -44,6 +54,9 @@ $apply || { echo "(ドライラン。実行するには --apply を付ける)"; 
 command -v swiftc >/dev/null || { echo "swiftc が見つかりません。Command Line Tools を入れてください" >&2; exit 1; }
 mkdir -p "$ROOT/build"
 swiftc -O "$ROOT/launch-indicator.swift" -o "$DAEMON"
+# アドホック署名はビルドのたびに別のプログラム扱いになり、アクセシビリティなどの許可が外れる。
+# 同じ証明書と識別子で署名し続ければ、ビルドし直しても許可が残る
+has_identity && codesign --force -s "$IDENTITY" -i "$LABEL" "$DAEMON"
 
 mkdir -p "$(dirname "$PLIST")"
 sed -e "s|{{LABEL}}|$LABEL|" -e "s|{{DAEMON}}|$DAEMON|" -e "s|{{LOG}}|$LOG|g" \

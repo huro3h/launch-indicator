@@ -17,11 +17,25 @@ Hammerspoon をやめるために Swift へ移した(2026-11-02)。やめた理�
 | 部品 | 役割 |
 |---|---|
 | `launch-indicator.swift` | 常駐本体。1ファイルで完結し、引数は取らない |
-| `setup.sh` | `swiftc` でビルド → plist 生成 → `launchctl bootstrap`。既定はドライラン、`--apply` で実行 |
+| `setup.sh` | `swiftc` でビルド → 署名 → plist 生成 → `launchctl bootstrap`。既定はドライラン、`--apply` で実行 |
 | `local.launch-indicator.plist.template` | `{{LABEL}}` `{{DAEMON}}` `{{LOG}}` を `setup.sh` が置き換える |
 
 app-toggle の `setup.rb` と違って Ruby を使わないのは、やることがビルドと登録だけで、
 TUI も PATH へのリンクも要らないため。
+
+## 署名
+
+`setup.sh` はビルド後、自己署名証明書 `Local Code Signing` と識別子 `local.launch-indicator`(launchd の
+ラベルと同じ)で署名し直す。証明書がキーチェーンになければ、リンカのアドホック署名のまま進む。
+証明書の素性と理由はワークスペースの `projects-workspace` skill のルール1.4。
+
+- 今の機能は許可を何も使わないので、署名の効き目はまだない。アクセシビリティなどが要る機能を
+  足したときに、ビルドし直すたびに許可が外れないよう先に入れておいた(2026-11-02)
+- 確認は `codesign -d -r- build/launch-indicator`。`designated => identifier "local.launch-indicator" and
+  certificate leaf = H"1ff2c2…"` なら証明書で署名できている。`cdhash` だけならアドホック署名
+- `has_identity` で `grep -q` を使わないのは、`pipefail` 下で一致後に `security` 側が SIGPIPE で
+  失敗扱いになりうるため。また `"$IDENTITY」"` のように全角の括弧を変数の直後に置くと、
+  bash が変数名の一部と解釈して `unbound variable` になるので `${IDENTITY}` と書く
 
 ## 起動の監視
 

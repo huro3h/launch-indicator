@@ -27,8 +27,14 @@
 `setup.sh --apply` は以下を行う。
 
 1. `launch-indicator.swift` を `build/launch-indicator` にコンパイルする
-2. `~/Library/LaunchAgents/local.launch-indicator.plist` をテンプレートから生成する
-3. `launchctl` で登録し、常駐を始める(ログイン時にも自動で起動する)
+2. キーチェーンにコード署名用の証明書 `Local Code Signing` があれば、それで署名し直す
+   (別の証明書を使うなら `CODESIGN_IDENTITY=証明書名 ./setup.sh --apply`。なければアドホック署名のまま)
+3. `~/Library/LaunchAgents/local.launch-indicator.plist` をテンプレートから生成する
+4. `launchctl` で登録し、常駐を始める(ログイン時にも自動で起動する)
+
+証明書で署名しておくと、ビルドし直しても macOS から同じプログラムとして扱われる。
+今は許可の要る機能がないので必須ではないが、将来アクセシビリティなどの許可が要る機能を足したときに、
+ビルドのたびに許可を付け直さずに済む。
 
 Swift のソースを変更したときも `./setup.sh --apply` をやり直す(ビルドし直して常駐を入れ替える)。
 
