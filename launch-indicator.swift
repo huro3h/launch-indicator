@@ -1,6 +1,7 @@
 // launch-indicator
 //   アプリの起動が始まってから終わるまでの間、メニューバーに「◐ アプリ名 起動中」を、
 //   画面右上(メニューバーの直下)に「◐ アプリ名 起動中です...」のバナーを出す。
+//   起動が終わったら、バナーに「✓ アプリ名 起動しました」を1秒出してから消す。
 //   起動完了の通知が来なかったアプリは、30秒で表示から外す。
 //
 //   launch-indicator   常駐する(launchd から起動する用)
@@ -21,14 +22,17 @@ func log(_ message: String) {
 //
 // pid ごとに名前と起動開始時刻を持つ。名前で持たないのは、同じアプリが終了直後に
 // もう一度起動されたときなどに、別の起動の完了で表示が消えないようにするため。
+// 起動が終わったアプリも「起動しました」を出している間は残し、launchedAt で見分ける。
 
 struct Launching {
   let name: String
   let startedAt: Date
+  var launchedAt: Date?
 }
 
 var launching: [pid_t: Launching] = [:]
 let launchTimeout: TimeInterval = 30
+let launchedDisplayTime: TimeInterval = 1  // 「起動しました」を出しておく時間
 
 // ---- スピナー ---------------------------------------------------------------
 
@@ -79,6 +83,15 @@ let bannerLineHeight: CGFloat = 22
 let bannerPadding: CGFloat = 12
 let bannerMargin: CGFloat = 12
 
+// 配色は Tailwind の teal。薄い背景(50)に通常の濃さの枠線(500)、文字は読みやすい濃さ(800)
+func rgb(_ hex: Int) -> NSColor {
+  NSColor(srgbRed: CGFloat((hex >> 16) & 0xff) / 255, green: CGFloat((hex >> 8) & 0xff) / 255,
+          blue: CGFloat(hex & 0xff) / 255, alpha: 1)
+}
+let bannerBackground = rgb(0xf0fdfa)  // teal-50
+let bannerBorder = rgb(0x14b8a6)      // teal-500
+let bannerText = rgb(0x115e59)        // teal-800
+
 let bannerPanel: NSPanel = {
   let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: bannerWidth, height: 100),
                       styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
@@ -94,7 +107,9 @@ let bannerPanel: NSPanel = {
   let box = NSView(frame: panel.contentView!.bounds)
   box.autoresizingMask = [.width, .height]
   box.wantsLayer = true
-  box.layer?.backgroundColor = NSColor(white: 0.1, alpha: 0.85).cgColor
+  box.layer?.backgroundColor = bannerBackground.withAlphaComponent(0.65).cgColor  // 下の画面を少し透かす
+  box.layer?.borderColor = bannerBorder.cgColor
+  box.layer?.borderWidth = 1
   box.layer?.cornerRadius = 10
   panel.contentView = box
   return panel
@@ -103,23 +118,22 @@ let bannerPanel: NSPanel = {
 let bannerLabel: NSTextField = {
   let label = NSTextField(labelWithString: "")
   label.font = .systemFont(ofSize: 15)
-  label.textColor = .white
+  label.textColor = bannerText
   label.maximumNumberOfLines = 0
   label.lineBreakMode = .byTruncatingTail
   bannerPanel.contentView?.addSubview(label)
   return label
 }()
 
-func updateBanner(_ names: [String]) {
-  if names.isEmpty {
+func updateBanner(_ lines: [String]) {
+  if lines.isEmpty {
     bannerPanel.orderOut(nil)
     return
   }
 
-  bannerLabel.stringValue = names.map { "\(spinnerFrames[spinnerIndex]) \($0) 起動中です..." }
-    .joined(separator: "\n")
+  bannerLabel.stringValue = lines.joined(separator: "\n")
 
-  let height = bannerPadding * 2 + bannerLineHeight * CGFloat(names.count)
+  let height = bannerPadding * 2 + bannerLineHeight * CGFloat(lines.count)
   bannerLabel.frame = NSRect(x: bannerPadding, y: bannerPadding,
                              width: bannerWidth - bannerPadding * 2, height: height - bannerPadding * 2)
 
@@ -140,14 +154,18 @@ func updateBanner(_ names: [String]) {
 func refresh() {
   let now = Date()
   // 起動完了の通知が来なかった場合に備え、一定時間で表示から外す
-  for (pid, entry) in launching where now.timeIntervalSince(entry.startedAt) > launchTimeout {
+  for (pid, entry) in launching
+  where entry.launchedAt == nil && now.timeIntervalSince(entry.startedAt) > launchTimeout {
     log("時間切れ: \(entry.name) pid=\(pid)")
     launching[pid] = nil
   }
 
-  let names = launching.values.map(\.name).sorted()
+  let entries = launching.values.sorted { $0.name < $1.name }
+  let names = entries.filter { $0.launchedAt == nil }.map(\.name)
   updateStatusItem(names)
-  updateBanner(names)
+  updateBanner(entries.map {
+    $0.launchedAt == nil ? "\(spinnerFrames[spinnerIndex]) \($0.name) 起動中です..." : "✓ \($0.name) 起動しました"
+  })
   if names.isEmpty { stopSpinner() }
 }
 
@@ -174,17 +192,27 @@ let didLaunchObserver = center.addObserver(
   forName: NSWorkspace.didLaunchApplicationNotification, object: nil, queue: .main
 ) { note in
   guard let app = runningApp(note) else { return }
-  log("起動完了: \(app.localizedName ?? "アプリ") pid=\(app.processIdentifier)")
-  launching[app.processIdentifier] = nil
+  let pid = app.processIdentifier
+  log("起動完了: \(app.localizedName ?? "アプリ") pid=\(pid)")
+  guard launching[pid] != nil else { return }
+  // すぐには消さず、「起動しました」を少しの間出す
+  let launchedAt = Date()
+  launching[pid]?.launchedAt = launchedAt
   refresh()
+  DispatchQueue.main.asyncAfter(deadline: .now() + launchedDisplayTime) {
+    // その間に同じ pid で起動し直されていたら、新しい方の表示は消さない
+    guard launching[pid]?.launchedAt == launchedAt else { return }
+    launching[pid] = nil
+    refresh()
+  }
 }
 
 // 起動途中で落ちたアプリは didLaunch が来ないので、終了でも表示から外す
 let didTerminateObserver = center.addObserver(
   forName: NSWorkspace.didTerminateApplicationNotification, object: nil, queue: .main
 ) { note in
-  guard let app = runningApp(note), launching[app.processIdentifier] != nil else { return }
-  log("起動中に終了: \(app.localizedName ?? "アプリ") pid=\(app.processIdentifier)")
+  guard let app = runningApp(note), let entry = launching[app.processIdentifier] else { return }
+  if entry.launchedAt == nil { log("起動中に終了: \(app.localizedName ?? "アプリ") pid=\(app.processIdentifier)") }
   launching[app.processIdentifier] = nil
   refresh()
 }

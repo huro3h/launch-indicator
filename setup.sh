@@ -64,7 +64,11 @@ sed -e "s|{{LABEL}}|$LABEL|" -e "s|{{DAEMON}}|$DAEMON|" -e "s|{{LOG}}|$LOG|g" \
 plutil -lint "$PLIST" >/dev/null
 
 # 登録済みなら一度外してから入れ直す(ビルドし直したバイナリに入れ替えるため)
-loaded && launchctl bootout "$DOMAIN/$LABEL"
+if loaded; then
+  launchctl bootout "$DOMAIN/$LABEL"
+  # bootout は外し終わる前に戻ることがあり、すぐ bootstrap すると「5: Input/output error」になる
+  for _ in {1..50}; do loaded || break; sleep 0.1; done
+fi
 launchctl bootstrap "$DOMAIN" "$PLIST"
 
 sleep 1
