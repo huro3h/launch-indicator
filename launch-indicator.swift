@@ -7,7 +7,8 @@
 //   launch-indicator   常駐する(launchd から起動する用)
 //
 //   起動の開始・完了は NSWorkspace の willLaunch / didLaunch 通知で受け取る。
-//   どちらも許可(アクセシビリティ・入力監視・通知)は要らない。
+//   app-toggle のホットキーで起動したときは、willLaunch より先に app-toggle から分散通知が届くので、
+//   その時点で表示を始める。どれも許可(アクセシビリティ・入力監視・通知)は要らない。
 
 import AppKit
 
@@ -26,11 +27,15 @@ func log(_ message: String) {
 
 struct Launching {
   let name: String
+  let bundleID: String?
   let startedAt: Date
   var launchedAt: Date?
 }
 
 var launching: [pid_t: Launching] = [:]
+// app-toggle から起動を頼んだと知らされ、まだ willLaunch が来ていないアプリ。pid がまだ無いので
+// bundle ID で持ち、willLaunch が来たら launching へ移す(起動開始時刻はキーを押した時刻のまま)。
+var requested: [String: Launching] = [:]
 let launchTimeout: TimeInterval = 30
 let launchedDisplayTime: TimeInterval = 1  // 「起動しました」を出しておく時間
 
@@ -159,8 +164,12 @@ func refresh() {
     log("時間切れ: \(entry.name) pid=\(pid)")
     launching[pid] = nil
   }
+  for (bundleID, entry) in requested where now.timeIntervalSince(entry.startedAt) > launchTimeout {
+    log("時間切れ: \(entry.name) \(bundleID)(起動が始まらなかった)")
+    requested[bundleID] = nil
+  }
 
-  let entries = launching.values.sorted { $0.name < $1.name }
+  let entries = (Array(launching.values) + requested.values).sorted { $0.name < $1.name }
   let names = entries.filter { $0.launchedAt == nil }.map(\.name)
   updateStatusItem(names)
   updateBanner(entries.map {
@@ -183,7 +192,9 @@ let willLaunchObserver = center.addObserver(
   guard let app = runningApp(note) else { return }
   let name = app.localizedName ?? "アプリ"
   log("起動開始: \(name) pid=\(app.processIdentifier)")
-  launching[app.processIdentifier] = Launching(name: name, startedAt: Date())
+  let request = app.bundleIdentifier.flatMap { requested.removeValue(forKey: $0) }
+  launching[app.processIdentifier] = Launching(name: name, bundleID: app.bundleIdentifier,
+                                             startedAt: request?.startedAt ?? Date())
   refresh()
   startSpinner()
 }
@@ -214,6 +225,36 @@ let didTerminateObserver = center.addObserver(
   guard let app = runningApp(note), let entry = launching[app.processIdentifier] else { return }
   if entry.launchedAt == nil { log("起動中に終了: \(app.localizedName ?? "アプリ") pid=\(app.processIdentifier)") }
   launching[app.processIdentifier] = nil
+  refresh()
+}
+
+// ---- app-toggle からの知らせ ---------------------------------------------------
+//
+// キーを押してから willLaunch が届くまでに間があることがあるので、app-toggle が起動を頼んだ時点で
+// 分散通知を受けて表示を始める。object は bundle ID、userInfo の name は表示名。
+// 通知の名前は app-toggle の app-toggle-daemon.swift と揃える。
+
+let distributedCenter = DistributedNotificationCenter.default()
+
+let willStartObserver = distributedCenter.addObserver(
+  forName: Notification.Name("local.launch-indicator.willStart"), object: nil, queue: .main
+) { note in
+  guard let bundleID = note.object as? String else { return }
+  // 知らせが遅れて willLaunch の後に届いたときは、二重に出さない
+  guard !launching.values.contains(where: { $0.launchedAt == nil && $0.bundleID == bundleID }) else { return }
+  let name = (note.userInfo?["name"] as? String) ?? bundleID
+  log("起動の依頼: \(name) \(bundleID)")
+  requested[bundleID] = Launching(name: name, bundleID: bundleID, startedAt: Date())
+  refresh()
+  startSpinner()
+}
+
+// 起動を頼んだが失敗したときは、時間切れを待たずに外す
+let didFailObserver = distributedCenter.addObserver(
+  forName: Notification.Name("local.launch-indicator.didFail"), object: nil, queue: .main
+) { note in
+  guard let bundleID = note.object as? String, let entry = requested.removeValue(forKey: bundleID) else { return }
+  log("起動の失敗: \(entry.name) \(bundleID)")
   refresh()
 }
 

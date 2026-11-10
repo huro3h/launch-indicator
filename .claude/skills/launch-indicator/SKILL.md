@@ -48,6 +48,14 @@ TUI も PATH へのリンクも要らないため。
 | `didLaunchApplicationNotification` | 表示から外す |
 | `didTerminateApplicationNotification` | 起動途中で落ちたアプリは didLaunch が来ないので、ここでも外す(Lua 版には無かった) |
 
+- **app-toggle から起動を頼まれたら、willLaunch を待たずに出す。** `openApplication` から willLaunch までに
+  間があることがあり、キーを押してもしばらくバナーが出なかった(2026-11-10)。app-toggle は未起動のアプリを
+  開く直前に分散通知 `local.launch-indicator.willStart`(object = bundle ID、userInfo の `name`)を、
+  失敗したら `local.launch-indicator.didFail` を送る。pid がまだ無いので `requested`(bundle ID がキー)に入れ、
+  willLaunch が来たら同じ bundle ID のものを `launching` へ移す(開始時刻はキーを押した時刻のまま)。
+  willLaunch が先に来ていたら二重に出さない。willLaunch が来なければ同じく30秒で外す
+- 依頼の時点の名前は app-toggle がファイル名から取った英語名(計算機なら `Calculator`)で、
+  willLaunch で macOS の名前に置き換わる。言語ごとの名前を素のバイナリから引く方法は見つからなかった
 - **起動中のアプリは pid で持つ。** Lua 版はアプリ名をキーにしていたが、同じアプリを終了直後に
   起動し直したときなどに、別の起動の完了で表示が消えうるため
 - 30秒の時間切れは Lua 版と同じ。スピナーのタイマー(0.25秒ごと)が `refresh()` を呼ぶついでに判定する。
@@ -67,6 +75,12 @@ TUI も PATH へのリンクも要らないため。
 - 通知センターを使わない理由は app-toggle の skill を参照(署名済みバンドルと許可が要る、消す時間を決められない)
 
 ## 動作確認
+
+- app-toggle との連携: 両方を scratchpad にビルドし、`app-toggle-daemon --config` に
+  `{"hotkeys":[{"bundle_id":"com.apple.calculator","key":"ctrl+opt+shift+f19"}]}` を渡して手で起動、
+  `osascript -e 'tell application "System Events" to key code 80 using {control down, option down, shift down}'` で押す。
+  ログに `起動の依頼:` → `起動開始:` の順で出ればよい。didFail は小さな Swift で
+  `DistributedNotificationCenter.default().postNotificationName(..., deliverImmediately: true)` を送って確かめる
 
 - **表示の確認は `screencapture` ではなく、ウィンドウ一覧で行う**(app-toggle で、実際に出ていたパネルが
   `screencapture -x` に写らなかったため)。`CGWindowListCopyWindowInfo` を 20ms ごとに見ながら
