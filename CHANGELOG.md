@@ -6,6 +6,12 @@
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-11-14
+
+### Added
+
+- `launch-indicator --settings` で設定ウィンドウを開き、画面右上のバナーの背景・枠線・文字の色を [Tailwind CSS の色名](https://tailwindcss.com/docs/colors)(slate〜rose の22色)から選び、背景の不透明度をスライダーで変えられるようにした。濃さは背景 50・枠線 500・文字 800 で固定。開いている間は右上にデモのバナーを出すので、見ながら選べる。変更はすぐに保存され(`~/Library/Application Support/launch-indicator/settings.json`)、常駐中の表示にも反映される
+
 ## [1.0.3] - 2026-11-10
 
 ### Changed
